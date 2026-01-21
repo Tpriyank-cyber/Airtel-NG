@@ -1,153 +1,226 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 
-st.set_page_config(page_title="OSS KPI Analyzer", layout="wide")
+st.set_page_config(page_title="OSS KPI Processor", layout="wide")
 
-st.title("📊 OSS KPI Analyzer (BBH + DAY)")
+st.title("📊 OSS KPI Processing Tool (Technology Agnostic)")
 
 # ---------------------------------------------------
-# UPLOAD OSS FILES
+# CONSTANTS
+# ---------------------------------------------------
+IDENTIFIER_COLS = [
+    "BSC name",
+    "Segment Name",
+    "Cell Name",
+    "Site Name",
+    "Period start time",
+    "DATE",
+    "Date"
+]
+
+rna_kpi_name = "TCH_Availability"   # default RNA KPI (can be changed later)
+
+thresholds = {
+    "TCH_Availability": (">=", 99.5),
+    "AccessibilityCSSR": (">=", 98),
+    "SDCCH Blocking": ("<=", 1.25),
+    "TCH Blocking (User Perceived)": ("<=", 1.25),
+    "SDCCH Drop": ("<=", 1.25),
+    "CDR_2G": ("<=", 1.25),
+    "HOSR_HW_2G": (">=", 90),
+    "Cell avail accuracy 1s cellL": (">=", 99.5)
+}
+
+traffic_keywords = ["Traffic", "Erlang", "Data"]
+
+# ---------------------------------------------------
+# FILE UPLOAD
 # ---------------------------------------------------
 st.header("1️⃣ Upload OSS Files")
 
-oss1_file = st.file_uploader("Upload OSS 1 Excel", type=["xlsx"], key="oss1")
-oss2_file = st.file_uploader("Upload OSS 2 Excel", type=["xlsx"], key="oss2")
+col1, col2 = st.columns(2)
+
+with col1:
+    oss1_file = st.file_uploader("Upload OSS-1 Excel", type=["xlsx"])
+
+with col2:
+    oss2_file = st.file_uploader("Upload OSS-2 Excel", type=["xlsx"])
 
 # ---------------------------------------------------
-# FUNCTION TO READ SHEET NAMES
+# SHEET SELECTION
 # ---------------------------------------------------
-def get_sheet_names(uploaded_file):
-    if uploaded_file is None:
+def get_sheets(file):
+    if file is None:
         return []
-    xls = pd.ExcelFile(uploaded_file)
-    return xls.sheet_names
+    return pd.ExcelFile(file).sheet_names
+
+st.header("2️⃣ Select BBH & DAY Sheets")
+
+def sheet_selector(file, label):
+    sheets = get_sheets(file)
+    if not sheets:
+        return None, None
+    bbh = st.selectbox(f"{label} → Select BBH Sheet", sheets)
+    day = st.selectbox(f"{label} → Select DAY Sheet", sheets)
+    return bbh, day
+
+oss1_bbh, oss1_day = sheet_selector(oss1_file, "OSS-1")
+oss2_bbh, oss2_day = sheet_selector(oss2_file, "OSS-2")
 
 # ---------------------------------------------------
-# OSS 1 SHEET SELECTION
+# KPI DISCOVERY (DYNAMIC)
 # ---------------------------------------------------
-if oss1_file:
-    st.subheader("📂 OSS 1 – Sheet Selection")
+st.header("3️⃣ KPI Selection (Auto-Detected from Sheets)")
 
-    oss1_sheets = get_sheet_names(oss1_file)
+def extract_kpis(df):
+    return [
+        col for col in df.columns
+        if col not in IDENTIFIER_COLS
+    ]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        oss1_bbh_sheet = st.selectbox(
-            "Select BBH Sheet (OSS 1)",
-            options=oss1_sheets,
-            key="oss1_bbh"
-        )
-    with col2:
-        oss1_day_sheet = st.selectbox(
-            "Select DAY Sheet (OSS 1)",
-            options=oss1_sheets,
-            key="oss1_day"
-        )
+kpi_candidates = set()
 
-# ---------------------------------------------------
-# OSS 2 SHEET SELECTION
-# ---------------------------------------------------
-if oss2_file:
-    st.subheader("📂 OSS 2 – Sheet Selection")
+def load_df(file, sheet):
+    if file is None or sheet is None:
+        return None
+    return pd.read_excel(file, sheet_name=sheet)
 
-    oss2_sheets = get_sheet_names(oss2_file)
+dfs = []
 
-    col1, col2 = st.columns(2)
-    with col1:
-        oss2_bbh_sheet = st.selectbox(
-            "Select BBH Sheet (OSS 2)",
-            options=oss2_sheets,
-            key="oss2_bbh"
-        )
-    with col2:
-        oss2_day_sheet = st.selectbox(
-            "Select DAY Sheet (OSS 2)",
-            options=oss2_sheets,
-            key="oss2_day"
-        )
+for f, b, d in [
+    (oss1_file, oss1_bbh, oss1_day),
+    (oss2_file, oss2_bbh, oss2_day)
+]:
+    df_bbh = load_df(f, b)
+    df_day = load_df(f, d)
+    if df_bbh is not None:
+        dfs.append(df_bbh)
+    if df_day is not None:
+        dfs.append(df_day)
 
-# ---------------------------------------------------
-# KPI SELECTION
-# ---------------------------------------------------
-st.header("2️⃣ Select KPIs")
+for df in dfs:
+    kpi_candidates.update(extract_kpis(df))
 
-default_kpis = [
-    "TCH_Availability",
-    "AccessibilityCSSR",
-    "SDCCH Blocking",
-    "TCH Blocking (User Perceived)",
-    "SDCCH Drop",
-    "CDR_2G",
-    "HOSR_HW_2G",
-    "TotalTrafficErlangs",
-    "Total_Data_Traffic_HW",
-    "Cell avail accuracy 1s cellL"
-]
+kpi_candidates = sorted(list(kpi_candidates))
 
 selected_kpis = st.multiselect(
-    "Choose KPIs to Process",
-    options=default_kpis,
-    default=default_kpis
+    "Select KPIs to Process",
+    kpi_candidates,
+    default=kpi_candidates
 )
 
 # ---------------------------------------------------
 # PROCESS BUTTON
 # ---------------------------------------------------
-st.header("3️⃣ Process & Generate Output")
+st.header("4️⃣ Process Data")
 
 if st.button("🚀 Generate KPI Report"):
 
-    if not oss1_file and not oss2_file:
-        st.error("Please upload at least one OSS file.")
-        st.stop()
+    def prepare_long(df, selected_kpis):
+        df = df.drop(index=1, errors="ignore")
+        df["Period start time"] = pd.to_datetime(df["Period start time"])
+        df["DATE"] = df["Period start time"].dt.strftime("%d-%b")
 
-    dfs_bbh = []
-    dfs_day = []
+        melt_cols = [k for k in selected_kpis if k in df.columns]
 
-    # ---- OSS 1 ----
-    if oss1_file:
-        df_bbh_oss1 = pd.read_excel(oss1_file, sheet_name=oss1_bbh_sheet)
-        df_day_oss1 = pd.read_excel(oss1_file, sheet_name=oss1_day_sheet)
+        return df.melt(
+            id_vars=["BSC name", "Segment Name", "DATE"],
+            value_vars=melt_cols,
+            var_name="KPI",
+            value_name="VALUE"
+        )
 
-        dfs_bbh.append(df_bbh_oss1)
-        dfs_day.append(df_day_oss1)
+    all_long = []
 
-    # ---- OSS 2 ----
-    if oss2_file:
-        df_bbh_oss2 = pd.read_excel(oss2_file, sheet_name=oss2_bbh_sheet)
-        df_day_oss2 = pd.read_excel(oss2_file, sheet_name=oss2_day_sheet)
+    for f, b, d in [
+        (oss1_file, oss1_bbh, oss1_day),
+        (oss2_file, oss2_bbh, oss2_day)
+    ]:
+        df_bbh = load_df(f, b)
+        df_day = load_df(f, d)
 
-        dfs_bbh.append(df_bbh_oss2)
-        dfs_day.append(df_day_oss2)
+        if df_bbh is not None:
+            all_long.append(prepare_long(df_bbh, selected_kpis))
+        if df_day is not None:
+            all_long.append(prepare_long(df_day, selected_kpis))
+
+    df_all = pd.concat(all_long, ignore_index=True)
+
+    final_df = df_all.pivot_table(
+        index=["BSC name", "Segment Name", "KPI"],
+        columns="DATE",
+        values="VALUE",
+        aggfunc="first"
+    ).reset_index()
 
     # ---------------------------------------------------
-    # COMBINE DATA
+    # REMARK LOGIC
     # ---------------------------------------------------
-    df_bbh = pd.concat(dfs_bbh, ignore_index=True)
-    df_day = pd.concat(dfs_day, ignore_index=True)
+    date_cols = sorted(
+        [c for c in final_df.columns if c not in ["BSC name", "Segment Name", "KPI"]],
+        key=lambda x: pd.to_datetime(x, format="%d-%b")
+    )
 
-    st.success("OSS files loaded successfully!")
+    last_date = date_cols[-1]
 
-    st.write("🔍 BBH Data Preview")
-    st.dataframe(df_bbh.head())
+    def enhanced_remark(row):
+        kpi = row["KPI"]
+        v = row[last_date]
 
-    st.write("🔍 DAY Data Preview")
-    st.dataframe(df_day.head())
+        if pd.isna(v):
+            return "NO DATA"
+
+        if kpi in ["TCH_Availability", "Cell avail accuracy 1s cellL"] and v == 0:
+            return "SITE/CELL DOWN"
+
+        remark = ""
+        threshold_broken = False
+
+        if kpi in thresholds:
+            op, thr = thresholds[kpi]
+            if (op == ">=" and v >= thr) or (op == "<=" and v <= thr):
+                remark = "KPI Stable/Meeting Threshold"
+            else:
+                remark = "KPI not ok"
+                threshold_broken = True
+
+        is_traffic = any(word in kpi for word in traffic_keywords)
+
+        if threshold_broken and not is_traffic:
+            mask = (
+                (final_df["BSC name"] == row["BSC name"]) &
+                (final_df["Segment Name"] == row["Segment Name"]) &
+                (final_df["KPI"] == rna_kpi_name)
+            )
+            if not final_df.loc[mask].empty:
+                rna_val = round(float(final_df.loc[mask, last_date].values[0]), 2)
+                op, thr = thresholds.get(rna_kpi_name, (None, None))
+                if op and ((op == ">=" and rna_val < thr) or (op == "<=" and rna_val > thr)):
+                    remark += f", RNA UNSTABLE {rna_val}%"
+
+        return remark
+
+    final_df["REMARKS"] = final_df.apply(enhanced_remark, axis=1)
 
     # ---------------------------------------------------
-    # 👉 HERE you plug your FINAL KPI LOGIC
-    # (the exact script you finalized earlier)
+    # ROUND VALUES
     # ---------------------------------------------------
+    value_cols = [c for c in final_df.columns if c not in ["BSC name", "Segment Name", "KPI", "REMARKS"]]
+    final_df[value_cols] = final_df[value_cols].apply(pd.to_numeric, errors="coerce").round(2)
 
-    st.info("⚙️ KPI processing logic will run here (final script integration)")
+    # ---------------------------------------------------
+    # EXPORT
+    # ---------------------------------------------------
+    buffer = BytesIO()
+    final_df.to_excel(buffer, index=False)
+    buffer.seek(0)
 
-    # Example output
-    output_file = "2G_FINAL_OUTPUT.xlsx"
-    # final_df.to_excel(output_file, index=False)
+    st.success("✅ KPI Report Generated")
 
-    st.success("✅ KPI Report Generated Successfully!")
     st.download_button(
-        "📥 Download Output Excel",
-        data=open(output_file, "rb"),
-        file_name=output_file
+        label="📥 Download Excel",
+        data=buffer,
+        file_name="FINAL_KPI_OUTPUT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
